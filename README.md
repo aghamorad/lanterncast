@@ -2,19 +2,19 @@
 
 # LanternCast
 
-An experimental AirPlay screen-mirroring receiver for older Samsung Tizen TVs. Open LanternCast on the TV, then select **LanternCast** in your Mac's Screen Mirroring menu.
+An experimental AirPlay screen-mirroring receiver for older Samsung Tizen TVs. Open LanternCast on the TV, then select **LanternCast** in your Mac or iPhone's Screen Mirroring menu.
 
 It runs directly on the TV as a sideloaded widget, using a Native Client module and Samsung's native media player. It receives H.264 video and AAC/AAC-ELD audio over the local network. No companion streaming server, subscription or external diagnostic server is required.
 
-**Early release, v0.2.0.** Tested on a Samsung QA65Q7FAM (2017 Q7F), Tizen 3.0, ARMv7. The Mac connected, reconnected and sent valid 1080p desktop frames; the TV's video/audio players started and their playback clocks advanced. The physical TV image and audible output were not independently observed. Other TV models and iPhone mirroring remain unverified. This is not a general claim of compatibility with all Samsung TVs.
+**Early release, v0.2.1.** Tested on a Samsung QA65Q7FAM (2017 Q7F), Tizen 3.0, ARMv7. The Mac connected, reconnected and sent valid 1080p desktop frames; the TV's video/audio players started and their playback clocks advanced. Audible output has not been independently observed. A user photograph confirmed iPhone video reaching the physical panel, with the portrait picture stretched. Version 0.2.1 reads the H.264 source dimensions, preserves aspect ratio, and updates configuration on rotation; the corrected iPhone picture still needs physical confirmation. Other TV models remain unverified. This is not a general claim of compatibility with all Samsung TVs.
 
 ## Install
 
-Download **LanternCast-0.2.0-unsigned.wgt** from [Releases](https://github.com/aghamorad/lanterncast/releases). The package must be signed with a Samsung certificate profile authorized for your TV before installation. A package signed for somebody else's TV is not a universal installer.
+Download **LanternCast-0.2.1-unsigned.wgt** from [Releases](https://github.com/aghamorad/lanterncast/releases). The package must be signed with a Samsung certificate profile authorized for your TV before installation. A package signed for somebody else's TV is not a universal installer.
 
 Follow [the installation guide](docs/INSTALL.md) for Developer Mode, certificates, signing and sideloading. The prebuilt release avoids compiling the old NaCl toolchain. Windows users can use Tizen Studio to sign and install; the helper scripts require Bash and Python 3.9+.
 
-After installation, keep the TV and Mac on the same local network, open LanternCast, then use **Control Center → Screen Mirroring → LanternCast**. If macOS asks you to choose content, choose the screen and start mirroring. Keep the app open while connected.
+After installation, keep the TV and sender on the same local network, open LanternCast, then use **Control Center → Screen Mirroring → LanternCast**. If macOS asks you to choose content, choose the screen and start mirroring. Keep the app open while connected.
 
 ## Compatibility and limits
 

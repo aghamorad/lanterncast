@@ -32,10 +32,10 @@ The manifest requests `internet`, `network.public` and `drmplay`. Your certifica
 Download the unsigned `.wgt` from [Releases](https://github.com/aghamorad/lanterncast/releases), and clone or download this repository for the helper scripts. With Tizen's CLI on PATH:
 
 ```sh
-./scripts/sign.sh /path/to/LanternCast-0.2.0-unsigned.wgt YourSamsungProfile
+./scripts/sign.sh /path/to/LanternCast-0.2.1-unsigned.wgt YourSamsungProfile
 ```
 
-The result is `dist/LanternCast-0.2.0-signed.wgt`. If Tizen is not on PATH, set `TIZEN` to the full path of its CLI executable. The script uses your existing profile; it does not create or upload certificates.
+The result is `dist/LanternCast-0.2.1-signed.wgt`. If Tizen is not on PATH, set `TIZEN` to the full path of its CLI executable. The script uses your existing profile; it does not create or upload certificates.
 
 On Windows, extract the unsigned widget into a folder, import it as a Tizen web project, select your Samsung profile and package/sign it using Tizen Studio. This GUI workflow is based on Samsung's tooling and has not been tested with this release. The Bash helper's legacy `tv-samsung-7.0` packaging metadata matches the tooling used for the tested Tizen 3.0 TV; it is not the app's required runtime version.
 
@@ -44,7 +44,7 @@ On Windows, extract the unsigned widget into a folder, import it as a Tizen web 
 On macOS/Linux with `sdb` on PATH:
 
 ```sh
-./scripts/install.sh TV_IP dist/LanternCast-0.2.0-signed.wgt
+./scripts/install.sh TV_IP dist/LanternCast-0.2.1-signed.wgt
 ```
 
 The helper uses the TV installer command verified on the Q7F. Check its output for a successful install. Other firmware may need Tizen Studio's **Run As → Tizen Web Application** deployment workflow instead. The script does not automatically launch the TV app.

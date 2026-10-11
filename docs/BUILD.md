@@ -8,8 +8,8 @@ The verified build host is macOS. Linux toolchain selection is supported by the 
 export PEPPER_DIR=/path/to/pepper_47
 ./scripts/build.sh
 python3 tests/check.py
-./scripts/sign.sh dist/LanternCast-0.2.0-unsigned.wgt YourSamsungProfile
-./scripts/install.sh TV_IP dist/LanternCast-0.2.0-signed.wgt
+./scripts/sign.sh dist/LanternCast-0.2.1-unsigned.wgt YourSamsungProfile
+./scripts/install.sh TV_IP dist/LanternCast-0.2.1-signed.wgt
 ```
 
 `PEPPER_DIR` must contain `include`, `lib/pnacl/Release` and `toolchain/mac_pnacl/bin`. For Linux set `PNACL_HOST=linux` when invoking Make or the build script. Host checks require `clang` and `clang++`; they test binary-plist integer encoding independently with Python's plistlib and SHA512 against hashlib.

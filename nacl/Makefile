@@ -73,4 +73,4 @@ $(TARGET)-arm.nexe: $(TARGET).final.pexe
 clean:
 	rm -f $(OBJS) $(TARGET).pexe $(TARGET).final.pexe $(TARGET)-arm.nexe
 
-airplay_module.o: video_sink.h audio_sink.h aes.h bplist.h
+airplay_module.o: video_sink.h h264_size.h audio_sink.h aes.h bplist.h

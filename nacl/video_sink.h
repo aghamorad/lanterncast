@@ -1,6 +1,7 @@
 #ifndef AIRPLAY_VIDEO_SINK_H
 #define AIRPLAY_VIDEO_SINK_H
 #include <deque>
+#include "h264_size.h"
 #include "ppapi/cpp/core.h"
 #include "ppapi/cpp/samsung/media_player_samsung.h"
 #include "ppapi/cpp/samsung/es_data_source_samsung.h"
@@ -14,7 +15,7 @@ class VideoSink : public pp::MediaEventsListener_Samsung,
     cb_.CancelAll(); AttachTo(NULL);
     player_=pp::MediaPlayer_Samsung(); stream_=pp::VideoElementaryStream_Samsung();
     source_=pp::ESDataSource_Samsung(instance_); frames_.clear(); config_.clear();
-    started_=configured_=ready_=pending_=enough_=playing_=shown_=false;
+    started_=configured_=initializing_=attached_=ready_=pending_=enough_=playing_=shown_=false;
     accepted_=play_tries_=0;
   }
   bool started() const { return started_; }
@@ -35,11 +36,31 @@ class VideoSink : public pp::MediaEventsListener_Samsung,
     PP_Rect rect={{0,0},{1920,1080}};
     int32_t d=player_.SetDisplayRect(rect,cb_.NewCallback(&VideoSink::DisplaySet));
     if(d!=PP_OK_COMPLETIONPENDING) DisplaySet(d);
+    // Samsung defaults to stretching the video across the display rectangle.
+    int32_t mode=player_.SetDisplayMode(PP_MEDIAPLAYERDISPLAYMODE_LETTERBOX,cb_.NewCallback(&VideoSink::DisplayModeSet));
+    if(mode!=PP_OK_COMPLETIONPENDING) DisplayModeSet(mode);
     int32_t r=source_.AddStream<pp::VideoElementaryStream_Samsung>(cb_.NewCallbackWithOutput(&VideoSink::Added),this);
     if(r!=PP_OK_COMPLETIONPENDING && r!=PP_OK) Log("DIAG FAIL Samsung AddStream="+Number(r));
   }
   void Config(const std::string& config, int width, int height) {
-    config_=config; width_=width>0?width:1920; height_=height>0?height:1080; Configure();
+    int w=width,h=height;
+    if(!h264_size::Parse(config,&w,&h) && (w<=0 || h<=0 || w>8192 || h>8192)) {
+      Log("DIAG FAIL video dimensions missing or invalid");return;
+    }
+    if(config==config_ && w==width_ && h==height_) return;
+    config_=config;width_=w;height_=h;configured_=false;ready_=false;
+    // Older firmware rejects SetDisplayMode. Fit the display rectangle itself
+    // so its default stretch mode still preserves the source proportions.
+    int display_w=1920,display_h=1080;
+    if(static_cast<int64_t>(w)*1080>static_cast<int64_t>(h)*1920)
+      display_h=static_cast<int64_t>(1920)*h/w;
+    else display_w=static_cast<int64_t>(1080)*w/h;
+    if(display_w<1) display_w=1;
+    if(display_h<1) display_h=1;
+    PP_Rect rect={{(1920-display_w)/2,(1080-display_h)/2},{display_w,display_h}};
+    int32_t d=player_.SetDisplayRect(rect,cb_.NewCallback(&VideoSink::DisplaySet));
+    if(d!=PP_OK_COMPLETIONPENDING) DisplaySet(d);
+    Log("DIAG video source dimensions="+Number(w)+"x"+Number(h)+" fitted display="+Number(display_w)+"x"+Number(display_h));Configure();
   }
   void Feed(const std::string& bytes, double time) {
     if(frames_.size()>120) { Log("DIAG FAIL video queue full"); return; }
@@ -62,8 +83,8 @@ class VideoSink : public pp::MediaEventsListener_Samsung,
     stream_=stream; Configure();
   }
   void Configure() {
-    if(stream_.is_null() || config_.empty() || configured_) return;
-    configured_=true;
+    if(stream_.is_null() || config_.empty() || configured_ || initializing_ || pending_) return;
+    configured_=initializing_=true;
     stream_.SetVideoCodecType(PP_VIDEOCODEC_TYPE_SAMSUNG_H264);
     stream_.SetVideoCodecProfile(PP_VIDEOCODEC_PROFILE_SAMSUNG_H264_HIGH);
     PP_Size size={width_,height_}; stream_.SetVideoFrameSize(size);
@@ -73,14 +94,18 @@ class VideoSink : public pp::MediaEventsListener_Samsung,
     if(r!=PP_OK_COMPLETIONPENDING) Initialized(r);
   }
   void Initialized(int32_t r) {
+    initializing_=false;
     Log("DIAG Samsung video initialized="+Number(r));
     if(r!=PP_OK) return;
+    if(!configured_) {Configure();return;}
+    if(attached_) {ready_=true;Pump();return;}
     int32_t a=player_.AttachDataSource(source_,cb_.NewCallback(&VideoSink::Attached));
     if(a!=PP_OK_COMPLETIONPENDING) Attached(a);
   }
   void Attached(int32_t r) {
     Log("DIAG Samsung source attached="+Number(r));
-    ready_=r==PP_OK; Pump();
+    attached_=r==PP_OK;ready_=attached_ && configured_;
+    Configure();Pump();
   }
   void Pump() {
     if(!ready_ || pending_ || enough_ || frames_.empty()) return;
@@ -94,9 +119,10 @@ class VideoSink : public pp::MediaEventsListener_Samsung,
   }
   void Appended(int32_t r) {
     pending_=false;
-    if(r==PP_ERROR_NOQUOTA) { pp::Module::Get()->core()->CallOnMainThread(10,cb_.NewCallback(&VideoSink::Retry)); return; }
+    if(r==PP_ERROR_NOQUOTA) { Configure();pp::Module::Get()->core()->CallOnMainThread(10,cb_.NewCallback(&VideoSink::Retry)); return; }
     if(!frames_.empty()) frames_.pop_front();
     if(r!=PP_OK) {Log("DIAG FAIL Samsung AppendPacket="+Number(r));ready_=false;return;}
+    Configure();
     if(accepted_ && accepted_%300==0) Log("DIAG video packets accepted="+Number(accepted_));
     if(++accepted_==1) Log("DIAG video first decoded packet accepted");
     if(!playing_ && accepted_>=3) {
@@ -109,6 +135,7 @@ class VideoSink : public pp::MediaEventsListener_Samsung,
   }
   void Retry(int32_t) { Pump(); }
   void DisplaySet(int32_t r) {Log("DIAG Samsung display="+Number(r));}
+  void DisplayModeSet(int32_t r) {Log("DIAG Samsung aspect fit="+Number(r)+(r==PP_OK?"":" (using fitted display rectangle)"));}
   void DurationSet(int32_t r) {Log("DIAG Samsung duration="+Number(r));}
   void TryPlay(int32_t) {
     int32_t p=player_.Play(cb_.NewCallback(&VideoSink::Playing));
@@ -127,7 +154,7 @@ class VideoSink : public pp::MediaEventsListener_Samsung,
   pp::VideoElementaryStream_Samsung stream_;
   std::deque<Frame> frames_;
   std::string config_;
-  bool started_=false,configured_=false,ready_=false,pending_=false,enough_=false,playing_=false,shown_=false;
+  bool started_=false,configured_=false,initializing_=false,attached_=false,ready_=false,pending_=false,enough_=false,playing_=false,shown_=false;
   int width_=1920,height_=1080,accepted_=0,play_tries_=0;
 };
 #endif
