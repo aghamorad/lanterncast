@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<widget xmlns="http://www.w3.org/ns/widgets"
+        xmlns:tizen="http://tizen.org/ns/widgets"
+        id="https://github.com/aghamorad/lanterncast"
+        version="0.2.0"
+        viewmodes="maximized">
+
+  <tizen:application id="MoradAP001.AirPlayTV"
+                     package="MoradAP001"
+                     required_version="3.0"/>
+
+  <content src="index.html"/>
+
+  <icon src="res/icon.png"/>
+  <name>LanternCast</name>
+
+  <!-- Every app installed on this television uses tv-samsung, not tv. -->
+  <tizen:profile name="tv-samsung"/>
+
+  <!-- Outbound and inbound network access -->
+  <tizen:privilege name="http://tizen.org/privilege/internet"/>
+  <tizen:privilege name="http://developer.samsung.com/privilege/network.public"/>
+  <tizen:privilege name="http://developer.samsung.com/privilege/drmplay"/>
+  <access origin="*" subdomains="true"/>
+  <tizen:allow-navigation>*</tizen:allow-navigation>
+
+  <tizen:setting screen-orientation="landscape"
+                 context-menu="disable"
+                 background-support="disable"
+                 encryption="disable"
+                 install-location="auto"
+                 hwkey-event="enable"/>
+</widget>

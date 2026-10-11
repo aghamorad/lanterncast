@@ -1,0 +1,7 @@
+{
+  "program": {
+    "arm": {
+      "url": "airplay-arm.nexe"
+    }
+  }
+}

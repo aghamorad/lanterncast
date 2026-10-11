@@ -1,0 +1,9 @@
+name: Source checks
+on: [push, pull_request]
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tests/check.py
+      - run: bash -n scripts/build.sh scripts/sign.sh scripts/install.sh

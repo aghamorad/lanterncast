@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>LanternCast</title>
+  <style>
+    /* Tizen 3.0 / Chromium 47: no CSS custom properties. Literal colours only. */
+    html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12;
+                 color: #f5f3f0; font-family: "Samsung One", "Helvetica Neue",
+                 Helvetica, Arial, sans-serif; overflow: hidden;
+                 -webkit-user-select: none; user-select: none; }
+
+    /* The plugin layer sits here and stays transparent; #ui draws the app. */
+    #stage { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+
+    #ui { position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+          z-index: 20; display: -webkit-box; display: -webkit-flex;
+          display: flex; -webkit-box-orient: vertical;
+          -webkit-flex-direction: column; flex-direction: column;
+          -webkit-box-pack: center; -webkit-justify-content: center;
+          justify-content: center; -webkit-box-align: center;
+          -webkit-align-items: center; align-items: center;
+          text-align: center; }
+
+    #glyph { width: 200px; height: 150px; margin-bottom: 46px; opacity: 0.96; }
+    #brand { font-size: 62px; font-weight: 300; letter-spacing: 1px; }
+    #dev   { font-size: 30px; font-weight: 400; color: #8a8f9a;
+             letter-spacing: 3px; margin-top: 14px; }
+    #state { font-size: 28px; font-weight: 400; color: #b9bec8;
+             margin-top: 64px; }
+
+    /* Keep the raw module report in the layout (so it can be read back over
+       the inspector) but parked far off-screen: it is diagnostics, not UI. */
+    #report { position: absolute; left: -20000px; top: 0; width: 1200px;
+              font-size: 26px; line-height: 1.5; white-space: pre-wrap;
+              font-family: monospace; }
+  </style>
+</head>
+<body>
+  <!--
+    The module posts a plain-text report which is both stashed in #report
+    (off-screen; read back over the inspector) and POSTed to the workstation,
+    so the result survives even if the module's own sockets fail.
+  -->
+  <div id="stage">
+    <embed id="nacl" type="application/x-nacl"
+           src="nacl/airplay.nmf" width="1280" height="720">
+  </div>
+
+  <div id="ui">
+    <div id="glyph">
+      <img src="res/icon.png" width="180" height="180" alt="LanternCast">
+    </div>
+    <div id="brand">LanternCast</div>
+    <div id="dev">SCREEN MIRRORING</div>
+    <div id="state">Starting…</div>
+  </div>
+
+  <div id="report"></div>
+
+  <script src="$WEBAPIS/webapis/webapis.js"></script>
+  <script>
+  (function () {
+    var REPORT_URL = ''; // Optional local diagnostic endpoint; disabled by default.
+    var out = [];
+
+    function render() {
+      document.getElementById('report').textContent = out.join('\n');
+    }
+
+    // The visible line is a plain-language summary of the module's own log.
+    function status(text) {
+      var el = document.getElementById('state');
+      if (el && el.textContent !== text) el.textContent = text;
+    }
+
+    function send(text) {
+      out.push(text);
+      if(out.length>500) out.shift();
+      render();
+
+      if (text.indexOf('DIAG session stopped') !== -1) {document.getElementById('ui').style.display = 'flex';status('Ready to receive');}
+      if (text.indexOf('video playback advancing') !== -1) document.getElementById('ui').style.display = 'none';
+      if (text.indexOf('tcp peer connected') !== -1) status('A device connected');
+      else if (text.indexOf('DIAG FAIL') !== -1) status('Setup problem — see the log');
+      else if (text.indexOf('mdns_joined=true') !== -1) status('Ready to receive');
+      else if (text.indexOf('DIAG SUMMARY') !== -1) status('Starting…');
+
+      try {
+        if(!REPORT_URL) return;
+        var xhr = new XMLHttpRequest();
+        xhr.open('POST', REPORT_URL, true);
+        xhr.send(text);                 // text/plain body: no CORS preflight
+      } catch (e) { /* the on-screen copy is the fallback */ }
+    }
+
+    // Ask the running module to repeat its report into the listener we just
+    // attached.  Init() runs before this script, so its first report is dropped.
+    function wire(naclEl) {
+      naclEl.addEventListener('message', function (ev) {
+        if(ev.data instanceof ArrayBuffer) {window.diagnosticFrame=ev.data;return;}
+        send(String(ev.data));
+      }, false);
+      naclEl.addEventListener('load', function () {
+        send('DIAG web  embed "load" fired');
+      }, false);
+      naclEl.addEventListener('error', function () {
+        send('DIAG FAIL  embed "error" fired — module refused to load');
+      }, false);
+      var lastNetwork = "";
+      function configureNetwork() {
+        try {var network='network|' + webapis.network.getIp() + '|' + webapis.network.getMac();if(network!==lastNetwork){naclEl.postMessage(network);lastNetwork=network;}}
+        catch(e) {status('Could not read TV network');}
+      }
+      configureNetwork();
+      setInterval(configureNetwork,30000);
+      naclEl.postMessage('report');
+    }
+
+    // The Tizen 3.0 engine can take closer to a minute to instantiate the
+    // plugin.  Probing once is what left the TV showing "Booting…" with no
+    // module and therefore no mDNS: it must keep asking until it is there.
+    function boot(tries) {
+      var naclEl = document.getElementById('nacl');
+
+      // Size the module to the screen so "painted" is unambiguous.
+      var w = window.innerWidth || 1280;
+      var h = window.innerHeight || 720;
+      if (naclEl) { naclEl.width = w; naclEl.height = h; }
+
+      if (tries === 0) {
+        send('DIAG web  runtime=' + navigator.userAgent);
+        send('DIAG web  viewport=' + w + 'x' + h);
+      }
+
+      if (!naclEl || !naclEl.postMessage) {
+        if (tries === 0) send('DIAG web  embed has no postMessage yet — retrying');
+        if (tries >= 90) {
+          send('DIAG FAIL  module never loaded after ' + tries + ' tries');
+          status('Could not start');
+          return;
+        }
+        setTimeout(function () { boot(tries + 1); }, 2000);
+        return;
+      }
+
+      if (tries > 0) send('DIAG web  module appeared after ' + (tries * 2) + 's');
+      wire(naclEl);
+    }
+
+    // Give the embed a moment to instantiate before probing it.
+    function start() { setTimeout(function () { boot(0); }, 500); }
+    if (document.readyState === 'complete') {
+      start();
+    } else {
+      window.addEventListener('load', start, false);
+    }
+  })();
+  </script>
+</body>
+</html>

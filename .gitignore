@@ -1,0 +1,13 @@
+/.build/
+/dist/
+/work/
+*.o
+*.nexe
+*.pexe
+*.wgt
+*.p12
+*.pfx
+*.pem
+.env*
+.DS_Store
+__pycache__/
