@@ -48,6 +48,8 @@
 #include "bplist.h"
 #include "video_sink.h"
 #include "audio_sink.h"
+#include "url_video.h"
+#include "rtp_queue.h"
 #include "ppapi/cpp/var_array_buffer.h"
 #include "ppapi/cpp/core.h"
 extern "C" {
@@ -329,7 +331,7 @@ const char* kInterfaces[] = {
 class AirPlayInstance : public pp::Instance {
  public:
   explicit AirPlayInstance(PP_Instance instance)
-      : pp::Instance(instance), callback_factory_(this), video_(this), audio_(this) {}
+      : pp::Instance(instance), callback_factory_(this), video_(this), audio_(this), url_video_(this) {}
 
   virtual bool Init(uint32_t /*argc*/, const char* /*argn*/[],
                     const char* /*argv*/[]) {
@@ -365,6 +367,7 @@ class AirPlayInstance : public pp::Instance {
       Report("DIAG TV network identity configured"); Announce("network configured");return;
     }
     if (text == "capture-next-frame") { capture_frame_=true; return; }
+    if (text == "capture-next-audio") { capture_audio_=true; return; }
     if (text == "report") {
       Report("DIAG nacl re-report requested by the page");
       ProbeInterfaces();
@@ -804,7 +807,46 @@ class AirPlayInstance : public pp::Instance {
       }
     }
 
-    if (method == "OPTIONS") {
+    const std::string route=path.substr(0,path.find('?'));
+    const std::string peer=http_conns_[cur_].socket.GetRemoteAddress().DescribeAsString(false).AsString();
+    if((path=="/fp-setup" || path=="/play" || method=="SETUP") && (mirror_ready_ || audio_active_ || url_video_.active()) && !session_peer_.empty() && peer!=session_peer_)
+      return Respond(453,"text/plain","receiver already in use\n");
+    if(path=="/fp-setup" || path=="/play")session_peer_=peer;
+    if(method=="HTTP/1.1" || method=="HTTP/1.0") return;
+    if(route=="/reverse" && method=="POST") {
+      Respond(101,"","","Connection: Upgrade\r\nUpgrade: PTTH/1.0\r\n");
+    } else if(route=="/play" && method=="POST") {
+      Bplist* play=Bplist::Parse(body.data(),body.size());
+      std::string url=Header(body,"content-location"),cookie,agent;
+      double start=0;bool fraction=true;
+      if(play) {
+        const Bplist* location=play->get("Content-Location");
+        if(location && location->Is(Bplist::kString))url=location->str();
+        const Bplist* pos=play->get("Start-Position-Seconds");
+        if(pos)fraction=false;else pos=play->get("Start-Position");
+        if(pos)start=pos->Is(Bplist::kReal)?pos->real():pos->Is(Bplist::kUint)?pos->uint():0;
+        const Bplist* headers=play->get("HTTPHeaders");
+        const Bplist* c=headers?headers->get("Cookie"):NULL;
+        const Bplist* a=headers?headers->get("User-Agent"):NULL;
+        if(c && c->Is(Bplist::kString))cookie=c->str();
+        if(a && a->Is(Bplist::kString))agent=a->str();
+      } else {std::string pos=Header(body,"start-position");if(!pos.empty())start=strtod(pos.c_str(),NULL);}
+      delete play;
+      if((url.compare(0,7,"http://")!=0 && url.compare(0,8,"https://")!=0) || !std::isfinite(start) || start<0)
+        return Respond(400,"text/plain","unsupported video location\n");
+      video_.Reset();audio_.Reset();audio_active_=false;
+      url_video_.Start(url,start,fraction,cookie,agent);
+      Respond(200,"","");
+    } else if(route=="/playback-info" && method=="GET") {
+      Respond(200,"text/x-apple-plist+xml",url_video_.Info());
+    } else if(route=="/scrub") {
+      if(method=="GET") Respond(200,"text/parameters",url_video_.Scrub());
+      else {size_t p=path.find("position=");if(p==std::string::npos)return Respond(400,"","");url_video_.Seek(strtod(path.c_str()+p+9,NULL));Respond(200,"","");}
+    } else if(route=="/rate" && method=="POST") {
+      size_t p=path.find("value=");if(p==std::string::npos)return Respond(400,"","");url_video_.Rate(strtod(path.c_str()+p+6,NULL));Respond(200,"","");
+    } else if(route=="/stop" && method=="POST") {
+      url_video_.Reset();video_epoch_=-1;Report("DIAG session stopped");Respond(200,"","");
+    } else if (method == "OPTIONS") {
       Respond(200, "text/plain", "");
     } else if (path == "/info" || path == "/server-info") {
       Respond(200, "application/x-apple-binary-plist", InfoPlist());
@@ -820,6 +862,11 @@ class AirPlayInstance : public pp::Instance {
       Respond(200, "text/parameters", body.find("volume") != std::string::npos ? "volume: 0.0\r\n" : "");
     } else if (path == "/feedback") {
       Respond(200, "text/plain", "");
+    } else if (path == "/audioMode" && method == "POST") {
+      Bplist* mode=Bplist::Parse(body.data(),body.size());
+      if(!mode || !mode->Is(Bplist::kDict)) {delete mode;return Respond(400,"text/plain","invalid audio mode\n");}
+      Report("DIAG audio mode acknowledged "+NodeText(mode->get("audioMode")));
+      delete mode;Respond(200,"text/plain", "");
     } else if (method == "TEARDOWN") {
       bool stop_video=body.empty(),stop_audio=body.empty();
       Bplist* teardown=Bplist::Parse(body.data(),body.size());
@@ -1088,6 +1135,7 @@ class AirPlayInstance : public pp::Instance {
           int codec=ct && ct->Is(Bplist::kUint)?ct->uint():8;
           if(codec!=4 && codec!=8) {delete root;return Respond(461,"text/plain","unsupported audio codec\n");}
           audio_.Start(codec); audio_active_=true; audio_epoch_set_=false; audio_packets_=0;
+          audio_seq_set_=false;audio_duplicates_=0;audio_queue_.Reset();audio_sync_=false;audio_have_stamp_=false;
           entry.push_back(std::make_pair(std::string("type"), reply.Uint(96)));
           // Advertise our UDP control port, independently of the sender port.
           entry.push_back(std::make_pair(std::string("controlPort"),
@@ -1163,7 +1211,7 @@ class AirPlayInstance : public pp::Instance {
     return oss.str();
   }
 
-  void Respond(int code, const std::string& type, const std::string& body) {
+  void Respond(int code, const std::string& type, const std::string& body, const std::string& extra="") {
     if (cur_ < 0 || !http_conns_[cur_].in_use) {
       Report("DIAG FAIL reply with no connection in flight — dropped");
       return;
@@ -1171,11 +1219,12 @@ class AirPlayInstance : public pp::Instance {
     HttpConn& c = http_conns_[cur_];
     std::ostringstream head;
     head << (rtsp_ ? "RTSP/1.0 " : "HTTP/1.1 ") << code
-         << (code == 200 ? " OK" : code == 404 ? " Not Found" : " Error")
+         << (code == 200 ? " OK" : code == 101 ? " Switching Protocols" : code == 404 ? " Not Found" : " Error")
          << "\r\n";
     if (!cseq_.empty()) head << "CSeq: " << cseq_ << "\r\n";
     if (rtsp_) head << "Server: AirTunes/" << kSrcVersion << "\r\n";
     if (!type.empty()) head << "Content-Type: " << type << "\r\n";
+    head << extra;
     head << "Content-Length: " << body.size() << "\r\n\r\n";
     // Write is asynchronous, so the bytes must outlive this call.
     c.write_out = head.str() + body;
@@ -1325,6 +1374,7 @@ class AirPlayInstance : public pp::Instance {
   }
 
   void InitMirror(uint64_t id) {
+    url_video_.Reset();
     unsigned char k[64], iv[64];
     std::string key(reinterpret_cast<const char*>(aes_key_),16);
     std::ostringstream num; num << id;
@@ -1335,7 +1385,7 @@ class AirPlayInstance : public pp::Instance {
     mirror_pos_=16; mirror_ready_=true; video_epoch_=-1; mirror_pending_.clear();
     Report("DIAG mirror AES ready connID="+num.str());
     video_.Reset();
-    mirror_packets_=bad_frames_=0;
+    mirror_packets_=bad_frames_=0;mirror_codec_.clear();
     video_.Start(1920,1080);
   }
   static void Hash(const std::string& input, unsigned char output[64]) {
@@ -1372,7 +1422,11 @@ class AirPlayInstance : public pp::Instance {
         size_t np=(p[ns+9]<<8)|p[ns+10];
         if(ns+11+np>n) continue;
         mirror_config_=std::string("\0\0\0\1",4)+payload.substr(8,ns)+std::string("\0\0\0\1",4)+payload.substr(ns+11,np);
-        video_.Config(mirror_config_,static_cast<int>(width),static_cast<int>(height));
+        mirror_codec_=mirror_config_;
+        if(!url_video_.active()) {
+          if(!video_.started())video_.Start(1920,1080);
+          video_.Config(mirror_config_,std::isfinite(width)?static_cast<int>(width):0,std::isfinite(height)?static_cast<int>(height):0);
+        }
         Report("DIAG mirror SPS/PPS received bytes="+IndexText(n)+" dimensions="+IndexText(width)+"x"+IndexText(height));
       } else if(type==0 && mirror_ready_) {
         if (mirror_packets_++==0) Report("DIAG mirror first ciphertext "+HexBytes(payload,64));
@@ -1389,11 +1443,12 @@ class AirPlayInstance : public pp::Instance {
           continue;
         }
         if(!mirror_config_.empty()) {payload=mirror_config_+payload; mirror_config_.clear();}
+        if(!url_video_.active() && !video_.started() && !mirror_codec_.empty()){video_.Start(1920,1080);video_.Config(mirror_codec_,0,0);video_epoch_=-1;}
         if (video_epoch_<0) video_epoch_=timestamp;
         if(capture_frame_) {
           pp::VarArrayBuffer frame(payload.size());memcpy(frame.Map(),payload.data(),payload.size());frame.Unmap();PostMessage(frame);capture_frame_=false;
         }
-        video_.Feed(payload, timestamp-video_epoch_);
+        if(!url_video_.active()) video_.Feed(payload, timestamp-video_epoch_);
       }
     }
   }
@@ -1413,6 +1468,15 @@ class AirPlayInstance : public pp::Instance {
     audio_udp_[i].RecvFrom(&audio_buf_[i][0],4096,callback_factory_.NewCallbackWithOutput(&AirPlayInstance::AudioReceived,i));
   }
   void AudioReceived(int32_t n,const pp::NetAddress& peer,int i) {
+    if(!session_peer_.empty() && peer.DescribeAsString(false).AsString()!=session_peer_){ReadAudio(i);return;}
+    if(n>=20 && i==1 && audio_active_ && (static_cast<unsigned char>(audio_buf_[i][1])&127)==0x54) {
+      const unsigned char* p=reinterpret_cast<const unsigned char*>(&audio_buf_[i][0]);
+      audio_sync_rtp_=(uint32_t(p[4])<<24)|(uint32_t(p[5])<<16)|(uint32_t(p[6])<<8)|p[7];
+      uint64_t stamp=0;for(int j=8;j<16;++j)stamp=(stamp<<8)|p[j];
+      audio_sync_ntp_=double(stamp>>32)+double(stamp&0xffffffffULL)/4294967296.0;
+      if(!audio_sync_) {audio_.ClearQueued();Report("DIAG audio sender clock synchronized");}
+      audio_sync_=true;
+    }
     if(n>12 && audio_active_) {
       const unsigned char* b=reinterpret_cast<const unsigned char*>(&audio_buf_[i][0]);
       int off=(i==1 && (b[1]&127)==86)?4:0;
@@ -1420,14 +1484,34 @@ class AirPlayInstance : public pp::Instance {
         b+=off; int head=12+4*(b[0]&15);
         if((b[0]&16) && n>off+head+4) head+=4+4*((b[head+2]<<8)|b[head+3]);
         if(n>off+head) {
+          uint16_t seq=(static_cast<uint16_t>(b[2])<<8)|b[3];
           uint32_t stamp=(static_cast<uint32_t>(b[4])<<24)|(static_cast<uint32_t>(b[5])<<16)|(static_cast<uint32_t>(b[6])<<8)|b[7];
           if(!audio_epoch_set_) {audio_epoch_=stamp;audio_epoch_set_=true;}
-          std::string data(reinterpret_cast<const char*>(b+head),n-off-head);
+          AudioPacket packet;packet.sequence=seq;packet.timestamp=stamp;
+          packet.bytes.assign(reinterpret_cast<const char*>(b+head),n-off-head);
+          audio_queue_.Push(packet);
+          while(audio_queue_.Pop(pp::Module::Get()->core()->GetTimeTicks(),&packet)) {
+          std::string data=packet.bytes;stamp=packet.timestamp;
           AES_ctx ctx; AES_init_ctx_iv(&ctx,aes_key_,aes_iv_);
           size_t blocks=data.size()/16*16;
           if(blocks) AES_CBC_decrypt_buffer(&ctx,reinterpret_cast<unsigned char*>(&data[0]),blocks);
-          audio_.Feed(data,static_cast<double>(static_cast<int32_t>(stamp-audio_epoch_))/44100);
+          if(capture_audio_ && data.size()>16) {
+            pp::VarArrayBuffer frame(data.size());memcpy(frame.Map(),data.data(),data.size());frame.Unmap();PostMessage(frame);capture_audio_=false;
+            Report("DIAG captured decrypted audio bytes="+IndexText(data.size()));
+          }
+          bool sync=audio_sync_ && video_epoch_>=0 && video_.has_clock();
+          double pts=sync?audio_sync_ntp_+static_cast<double>(static_cast<int32_t>(stamp-audio_sync_rtp_))/44100-video_epoch_:static_cast<double>(static_cast<int32_t>(stamp-audio_epoch_))/44100;
+          if(sync && (pts< -10 || pts-video_.PlaybackTime()>30))sync=false;
+          audio_.SetClock(video_.PlaybackTime(),sync);
+          if(audio_have_stamp_) {
+            int missing=static_cast<int32_t>(stamp-audio_last_stamp_)/480-1;
+            for(int lost=std::min(missing,4);lost>0;--lost)audio_.Feed(std::string(),pts-lost*480.0/44100);
+          }
+          audio_last_stamp_=stamp;audio_have_stamp_=true;
+          audio_.Feed(data,pts);
           if(++audio_packets_==1) Report("DIAG audio RTP received bytes="+IndexText(data.size()));
+          if(audio_packets_%500==0)Report("DIAG RTP reordered duplicates="+IndexText(audio_queue_.duplicates())+" missing="+IndexText(audio_queue_.lost())+" synchronized="+(sync?"true":"false"));
+          }
         }
       }
     }
@@ -1843,19 +1927,29 @@ class AirPlayInstance : public pp::Instance {
 
   pp::CompletionCallbackFactory<AirPlayInstance> callback_factory_;
   bool capture_frame_=false;
+  bool capture_audio_=false;
   VideoSink video_;
   AudioSink audio_;
+  UrlVideo url_video_;
+  std::string session_peer_;
   pp::UDPSocket audio_udp_[2];
   std::vector<char> audio_buf_[2];
   bool audio_active_=false,audio_epoch_set_=false;
   uint32_t audio_epoch_=0;
   int audio_packets_=0;
+  bool audio_seq_set_=false;
+  uint16_t audio_last_seq_=0;
+  int audio_duplicates_=0;
+  RtpQueue audio_queue_;
+  bool audio_sync_=false,audio_have_stamp_=false;
+  uint32_t audio_sync_rtp_=0,audio_last_stamp_=0;
+  double audio_sync_ntp_=0;
   double video_epoch_=-1;
   AES_ctx mirror_aes_;
   unsigned char mirror_block_[16];
   int mirror_pos_=16, bad_frames_=0,mirror_packets_=0;
   bool mirror_ready_=false, timing_active_=false;
-  std::string mirror_pending_, mirror_config_, timing_request_;
+  std::string mirror_pending_, mirror_config_, timing_request_,mirror_codec_;
   pp::NetAddress timing_peer_;
   pp::Graphics2D graphics_2d_;
   pp::TCPSocket tcp_socket_;

@@ -21,7 +21,7 @@ class BplistReader;
 
 class Bplist {
  public:
-  enum Kind { kNone, kUint, kData, kString, kDict, kArray };
+  enum Kind { kNone, kUint, kData, kString, kDict, kArray, kReal };
 
   ~Bplist();
 
@@ -32,6 +32,7 @@ class Bplist {
   Kind kind() const { return kind_; }
   bool Is(Kind k) const { return kind_ == k; }
   uint64_t uint() const { return u_; }
+  double real() const { return real_; }
   // String text, or the raw bytes when this node came from a data object.
   const std::string& str() const { return s_; }
 
@@ -53,6 +54,7 @@ class Bplist {
 
   Kind kind_;
   uint64_t u_;
+  double real_=0;
   std::string s_;
   std::vector<std::string> keys_;      // dictionary keys; empty for arrays
   std::vector<Bplist*> children_;

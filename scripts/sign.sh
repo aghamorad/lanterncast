@@ -24,5 +24,5 @@ PY
 "$TIZEN" package -t wgt -s "$PROFILE" -- "$STAGE"
 BUILT="$STAGE/LanternCast.wgt"
 [ -f "$BUILT" ] || { echo 'Tizen did not produce LanternCast.wgt'; exit 1; }
-cp "$BUILT" "$ROOT/dist/LanternCast-0.2.1-signed.wgt"
-echo "$ROOT/dist/LanternCast-0.2.1-signed.wgt"
+cp "$BUILT" "$ROOT/dist/LanternCast-0.2.2-signed.wgt"
+echo "$ROOT/dist/LanternCast-0.2.2-signed.wgt"

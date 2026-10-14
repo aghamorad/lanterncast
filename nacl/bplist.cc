@@ -132,6 +132,14 @@ class BplistReader {
       return node;
     }
 
+    if (hi == 0x2 && (lo == 2 || lo == 3)) {
+      size_t bytes=size_t(1)<<lo;
+      if(off+bytes>n_) {delete node;return NULL;}
+      node->kind_=Bplist::kReal;
+      if(bytes==4) {uint32_t bits=BeUint(p_+off,4);float v;memcpy(&v,&bits,4);node->real_=v;}
+      else {uint64_t bits=BeUint(p_+off,8);memcpy(&node->real_,&bits,8);}
+      return node;
+    }
     if (hi == 0x4 || hi == 0x5 || hi == 0x6) {  // data / ASCII / UTF-16BE
       uint64_t len;
       if (!ReadCount(p_, n_, &off, lo, &len)) {

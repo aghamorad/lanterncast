@@ -80,11 +80,12 @@
 
     function send(text) {
       out.push(text);
+      if(/direct video|FAIL|TODO|source dimensions|sender clock|backlog|catchup/.test(text)){window.sessionEvents=window.sessionEvents||[];window.sessionEvents.push(text);if(window.sessionEvents.length>100)window.sessionEvents.shift();}
       if(out.length>500) out.shift();
       render();
 
-      if (text.indexOf('DIAG session stopped') !== -1) {document.getElementById('ui').style.display = 'flex';status('Ready to receive');}
-      if (text.indexOf('video playback advancing') !== -1) document.getElementById('ui').style.display = 'none';
+      if (text.indexOf('DIAG session stopped') !== -1 || text.indexOf('direct video ended') !== -1) {document.getElementById('ui').style.display = 'flex';status('Ready to receive');}
+      if (text.indexOf('video playback advancing') !== -1 || text.indexOf('direct video playing') !== -1) document.getElementById('ui').style.display = 'none';
       if (text.indexOf('tcp peer connected') !== -1) status('A device connected');
       else if (text.indexOf('DIAG FAIL') !== -1) status('Setup problem — see the log');
       else if (text.indexOf('mdns_joined=true') !== -1) status('Ready to receive');
