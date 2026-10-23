@@ -24,5 +24,10 @@ PY
 "$TIZEN" package -t wgt -s "$PROFILE" -- "$STAGE"
 BUILT="$STAGE/LanternCast.wgt"
 [ -f "$BUILT" ] || { echo 'Tizen did not produce LanternCast.wgt'; exit 1; }
-cp "$BUILT" "$ROOT/dist/LanternCast-0.2.2-signed.wgt"
-echo "$ROOT/dist/LanternCast-0.2.2-signed.wgt"
+VERSION="$(python3 - "$ROOT/config.xml" <<'PYXML'
+import sys,xml.etree.ElementTree as ET
+print(ET.parse(sys.argv[1]).getroot().attrib['version'])
+PYXML
+)"
+cp "$BUILT" "$ROOT/dist/LanternCast-$VERSION-signed.wgt"
+echo "$ROOT/dist/LanternCast-$VERSION-signed.wgt"

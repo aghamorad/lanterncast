@@ -366,6 +366,7 @@ class AirPlayInstance : public pp::Instance {
       kDeviceId=full;kRaopMac=flat;kHostName="LanternCast-"+std::string(flat)+".local";
       Report("DIAG TV network identity configured"); Announce("network configured");return;
     }
+    if (text == "suspend") { StopSession(); return; }
     if (text == "capture-next-frame") { capture_frame_=true; return; }
     if (text == "capture-next-audio") { capture_audio_=true; return; }
     if (text == "report") {
@@ -790,28 +791,17 @@ class AirPlayInstance : public pp::Instance {
     // the bytes are not just diagnostics any more.
     const std::string body =
         (body_at == std::string::npos) ? std::string() : msg.substr(body_at + 4);
-    if (!body.empty()) {
-      // The whole body, 48 bytes to a line.  There is no cap here on purpose:
-      // the report server writes what it is given, so anything missing from the
-      // log was missing from this loop -- and a body cut off at 48 bytes is
-      // exactly where the SETUP walk stopped being diagnosable.
-      for (size_t i = 0; i < body.size(); i += 48) {
-        std::ostringstream oss;
-        oss << "DIAG http body[" << body.size() << "] @" << i;
-        for (size_t j = i; j < body.size() && j < i + 48; ++j) {
-          char b[8];
-          snprintf(b, sizeof(b), " %02x", static_cast<unsigned char>(body[j]));
-          oss << b;
-        }
-        Report(oss.str());
-      }
-    }
 
     const std::string route=path.substr(0,path.find('?'));
     const std::string peer=http_conns_[cur_].socket.GetRemoteAddress().DescribeAsString(false).AsString();
-    if((path=="/fp-setup" || path=="/play" || method=="SETUP") && (mirror_ready_ || audio_active_ || url_video_.active()) && !session_peer_.empty() && peer!=session_peer_)
+    const double now=pp::Module::Get()->core()->GetTimeTicks();
+    if(!session_peer_.empty() && !mirror_ready_ && !audio_active_ &&
+       !url_video_.active() && now-session_activity_>15) StopSession();
+    if(peer==session_peer_) session_activity_=now;
+    const bool changes_session=method=="SETUP" || method=="TEARDOWN" || method=="FLUSH" || method=="SET_PARAMETER" || method=="RECORD" || method=="POST";
+    if(changes_session && !session_peer_.empty() && peer!=session_peer_)
       return Respond(453,"text/plain","receiver already in use\n");
-    if(path=="/fp-setup" || path=="/play")session_peer_=peer;
+    if(path=="/fp-setup" || path=="/play") {session_peer_=peer;session_activity_=now;}
     if(method=="HTTP/1.1" || method=="HTTP/1.0") return;
     if(route=="/reverse" && method=="POST") {
       Respond(101,"","","Connection: Upgrade\r\nUpgrade: PTTH/1.0\r\n");
@@ -845,7 +835,7 @@ class AirPlayInstance : public pp::Instance {
     } else if(route=="/rate" && method=="POST") {
       size_t p=path.find("value=");if(p==std::string::npos)return Respond(400,"","");url_video_.Rate(strtod(path.c_str()+p+6,NULL));Respond(200,"","");
     } else if(route=="/stop" && method=="POST") {
-      url_video_.Reset();video_epoch_=-1;Report("DIAG session stopped");Respond(200,"","");
+      StopSession();Respond(200,"","");
     } else if (method == "OPTIONS") {
       Respond(200, "text/plain", "");
     } else if (path == "/info" || path == "/server-info") {
@@ -877,10 +867,14 @@ class AirPlayInstance : public pp::Instance {
         if(type && type->Is(Bplist::kUint)) {if(type->uint()==110) stop_video=true;if(type->uint()==96) stop_audio=true;}
       }
       delete teardown;
-      if(stop_video) {video_.Reset();mirror_ready_=false;Report("DIAG session stopped");}
-      if(stop_audio) {audio_.Reset();audio_active_=false;Report("DIAG audio session stopped");}
+      if(stop_video) StopMirror();
+      if(stop_audio) StopAudio();
+      if(!mirror_ready_ && !audio_active_) StopSession();
       Respond(200,"text/plain", "");
-    } else if (method == "RECORD" || method == "FLUSH" ||
+    } else if(method=="FLUSH") {
+      audio_.ClearQueued();audio_queue_.Reset();audio_have_stamp_=false;
+      Respond(200,"text/plain", "");
+    } else if (method == "RECORD" ||
                method == "TEARDOWN" || method == "SET_PARAMETER" ||
                method == "GET_PARAMETER") {
       // Acknowledged rather than 404'd.  None of these carries anything this
@@ -1091,7 +1085,7 @@ class AirPlayInstance : public pp::Instance {
       if (http_conns_[cur_].socket.GetRemoteAddress().DescribeAsIPv4Address(&peer)) {
         peer.port = Htons(tp->uint());
         timing_peer_ = pp::NetAddress(this, peer);
-        if (!timing_active_) { timing_active_ = true; SendTiming(0); }
+        if (!timing_active_) { timing_active_ = true; SendTiming(0,++timing_generation_); }
       }
     }
     Report("DIAG setup: legacy FairPlay session keys loaded");
@@ -1228,33 +1222,30 @@ class AirPlayInstance : public pp::Instance {
     head << "Content-Length: " << body.size() << "\r\n\r\n";
     // Write is asynchronous, so the bytes must outlive this call.
     c.write_out = head.str() + body;
-    c.write_pending = false;
-    int32_t r = c.socket.Write(c.write_out.data(),
-                               static_cast<int32_t>(c.write_out.size()),
-                               callback_factory_.NewCallback(
-                                   &AirPlayInstance::OnTcpWrite, cur_));
-    if (r == PP_OK_COMPLETIONPENDING) {
-      c.write_pending = true;
-    } else {
-      std::ostringstream oss;
-      oss << "DIAG FAIL tcp Write return=" << r << " (" << ResultName(r)
-          << ") on slot " << cur_;
-      Report(oss.str());
-    }
+    c.write_offset=0;
+    WriteHttp(cur_);
+  }
+
+  void WriteHttp(int ci) {
+    HttpConn& c=http_conns_[ci];
+    int32_t r=c.socket.Write(c.write_out.data()+c.write_offset,
+        static_cast<int32_t>(c.write_out.size()-c.write_offset),
+        callback_factory_.NewCallback(&AirPlayInstance::OnTcpWrite,ci));
+    c.write_pending=(r==PP_OK_COMPLETIONPENDING);
+    if(!c.write_pending) OnTcpWrite(r,ci);
   }
 
   void OnTcpWrite(int32_t result, int ci) {
-    HttpConn& c = http_conns_[ci];
-    if (!c.in_use) return;
-    c.write_pending = false;
-    std::ostringstream oss;
-    oss << "DIAG http replied (" << c.write_out.size() << " bytes, write="
-        << result << ", slot " << ci << ")";
-    Report(oss.str());
-    if (c.read_pending) {
-      c.read_pending = false;
-      ArmTcpRead(ci);
+    HttpConn& c=http_conns_[ci];
+    if(!c.in_use)return;
+    c.write_pending=false;
+    if(result<=0 || size_t(result)>c.write_out.size()-c.write_offset) {
+      CloseHttpConn(ci);return;
     }
+    c.write_offset+=result;
+    if(c.write_offset<c.write_out.size()) {WriteHttp(ci);return;}
+    c.write_out.clear();c.write_offset=0;
+    if(c.read_pending) {c.read_pending=false;ArmTcpRead(ci);}
   }
 
   // ---- M5 entry: the stream and timing ports SETUP advertises -------------
@@ -1329,6 +1320,12 @@ class AirPlayInstance : public pp::Instance {
   }
 
   void OnStreamAccept(int32_t result, pp::TCPSocket socket, int which) {
+    // A second connection must not replace a socket with an outstanding Read.
+    const std::string peer=socket.GetRemoteAddress().DescribeAsString(false).AsString();
+    if(result<0 || (which==0 && !mirror_ready_) || session_peer_.empty() ||
+       peer!=session_peer_ || stream_open_[which]) {
+      socket.Close();AcceptStream(which);return;
+    }
     ++stream_conns_;
     {
       std::ostringstream oss;
@@ -1338,6 +1335,7 @@ class AirPlayInstance : public pp::Instance {
       Report(oss.str());
     }
     stream_conn_[which] = socket;
+    stream_open_[which]=true;
     ArmStreamRead(which);
     AcceptStream(which);
   }
@@ -1346,22 +1344,25 @@ class AirPlayInstance : public pp::Instance {
     stream_buf_[which].resize(4096);
     int32_t r = stream_conn_[which].Read(
         &stream_buf_[which][0], static_cast<int32_t>(stream_buf_[which].size()),
-        callback_factory_.NewCallback(&AirPlayInstance::OnStreamRead, which));
+        callback_factory_.NewCallback(&AirPlayInstance::OnStreamRead, which, stream_generation_[which]));
     if (r != PP_OK_COMPLETIONPENDING) {
       std::ostringstream oss;
       oss << "DIAG FAIL " << kStreamNames[which] << " Read return=" << r << " ("
           << ResultName(r) << ")";
       Report(oss.str());
+      if(which==0) StopSession();
     }
   }
 
-  void OnStreamRead(int32_t result, int which) {
+  void OnStreamRead(int32_t result, int which, unsigned generation) {
+    if(generation!=stream_generation_[which] || !stream_open_[which]) return;
     if (result <= 0) {
       std::ostringstream oss;
       oss << "DIAG " << kStreamNames[which] << " stream closed (read=" << result
           << ")";
       Report(oss.str());
-      stream_conn_[which].Close();
+      if(which==0) StopSession();
+      else {stream_open_[which]=false;++stream_generation_[which];stream_conn_[which].Close();}
       return;
     }
     const std::string chunk(&stream_buf_[which][0], static_cast<size_t>(result));
@@ -1373,7 +1374,28 @@ class AirPlayInstance : public pp::Instance {
     ArmStreamRead(which);
   }
 
+  void StopMirror() {
+    mirror_ready_=false;video_.Reset();video_epoch_=-1;
+    mirror_pending_.clear();mirror_codec_.clear();mirror_pos_=16;
+    for(int i=0;i<kStreamCount;++i) {
+      stream_open_[i]=false;++stream_generation_[i];stream_conn_[i].Close();
+    }
+    Report("DIAG session stopped");
+  }
+  void StopAudio() {
+    audio_active_=false;audio_.Reset();audio_queue_.Reset();
+    audio_epoch_set_=audio_sync_=audio_have_stamp_=false;
+    Report("DIAG audio session stopped");
+  }
+  void StopSession() {
+    StopMirror();StopAudio();url_video_.Reset();session_peer_.clear();
+    setup_done_=false;timing_active_=false;++timing_generation_;
+    memset(&fairplay_,0,sizeof(fairplay_));
+    memset(aes_key_,0,sizeof(aes_key_));memset(aes_iv_,0,sizeof(aes_iv_));
+  }
+
   void InitMirror(uint64_t id) {
+    StopMirror();
     url_video_.Reset();
     unsigned char k[64], iv[64];
     std::string key(reinterpret_cast<const char*>(aes_key_),16);
@@ -1556,8 +1578,8 @@ class AirPlayInstance : public pp::Instance {
     }
   }
 
-  void SendTiming(int32_t) {
-    if (!timing_active_ || timing_peer_.is_null()) return;
+  void SendTiming(int32_t, unsigned generation) {
+    if (generation!=timing_generation_ || !timing_active_ || timing_peer_.is_null()) return;
     timing_request_.assign(32, '\0');
     timing_request_[0] = static_cast<char>(0x80);
     timing_request_[1] = static_cast<char>(0xd2);
@@ -1570,12 +1592,13 @@ class AirPlayInstance : public pp::Instance {
       timing_request_[28+i]=static_cast<char>(fraction >> (24-8*i));
     }
     ntp_socket_.SendTo(timing_request_.data(),32,timing_peer_,
-      callback_factory_.NewCallback(&AirPlayInstance::TimingSent));
+      callback_factory_.NewCallback(&AirPlayInstance::TimingSent,generation));
   }
-  void TimingSent(int32_t r) {
+  void TimingSent(int32_t r, unsigned generation) {
+    if(generation!=timing_generation_ || !timing_active_)return;
     if (r < 0) Report("DIAG FAIL timing send="+IndexText(r));
     pp::Module::Get()->core()->CallOnMainThread(1000,
-       callback_factory_.NewCallback(&AirPlayInstance::SendTiming));
+       callback_factory_.NewCallback(&AirPlayInstance::SendTiming,generation));
   }
   void OnNtpRecv(int32_t result, const pp::NetAddress& addr) {
     if (result >= 32) {
@@ -1932,6 +1955,7 @@ class AirPlayInstance : public pp::Instance {
   AudioSink audio_;
   UrlVideo url_video_;
   std::string session_peer_;
+  double session_activity_=0;
   pp::UDPSocket audio_udp_[2];
   std::vector<char> audio_buf_[2];
   bool audio_active_=false,audio_epoch_set_=false;
@@ -1970,6 +1994,7 @@ class AirPlayInstance : public pp::Instance {
     std::string request;
     std::vector<char> read_buffer;
     std::string write_out;
+    size_t write_offset=0;
     bool read_pending = false;
     bool write_pending = false;
     bool in_use = false;
@@ -1986,7 +2011,7 @@ class AirPlayInstance : public pp::Instance {
   std::string cseq_;
   // FairPlay state: stage 2's 164-byte request has to survive until SETUP hands
   // us the ekey that it decrypts.
-  fairplay_t fairplay_;
+  fairplay_t fairplay_ = {};
 
   // What actually succeeded, so the page can ask for it after Init() is over.
   bool tcp_bound_ = false;
@@ -2007,6 +2032,9 @@ class AirPlayInstance : public pp::Instance {
   // because the client dials into the mirror data port rather than the reverse.
   pp::TCPSocket stream_listen_[kStreamCount];
   pp::TCPSocket stream_conn_[kStreamCount];
+  bool stream_open_[kStreamCount] = {};
+  unsigned stream_generation_[kStreamCount] = {};
+  unsigned timing_generation_=0;
   std::vector<char> stream_buf_[kStreamCount];
   bool stream_listening_[kStreamCount] = {false, false};
   int stream_conns_ = 0;

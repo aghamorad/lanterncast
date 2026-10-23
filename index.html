@@ -67,8 +67,10 @@
   (function () {
     var REPORT_URL = ''; // Optional local diagnostic endpoint; disabled by default.
     var out = [];
+    var renderTimer = null;
 
     function render() {
+      renderTimer = null;
       document.getElementById('report').textContent = out.join('\n');
     }
 
@@ -82,11 +84,11 @@
       out.push(text);
       if(/direct video|FAIL|TODO|source dimensions|sender clock|backlog|catchup/.test(text)){window.sessionEvents=window.sessionEvents||[];window.sessionEvents.push(text);if(window.sessionEvents.length>100)window.sessionEvents.shift();}
       if(out.length>500) out.shift();
-      render();
+      if (renderTimer === null) renderTimer = setTimeout(render, 1000);
 
       if (text.indexOf('DIAG session stopped') !== -1 || text.indexOf('direct video ended') !== -1) {document.getElementById('ui').style.display = 'flex';status('Ready to receive');}
       if (text.indexOf('video playback advancing') !== -1 || text.indexOf('direct video playing') !== -1) document.getElementById('ui').style.display = 'none';
-      if (text.indexOf('tcp peer connected') !== -1) status('A device connected');
+      if (text.indexOf('mirror AES ready') !== -1 || text.indexOf('PCM output started=true') !== -1) status('Connecting…');
       else if (text.indexOf('DIAG FAIL') !== -1) status('Setup problem — see the log');
       else if (text.indexOf('mdns_joined=true') !== -1) status('Ready to receive');
       else if (text.indexOf('DIAG SUMMARY') !== -1) status('Starting…');
@@ -99,27 +101,42 @@
       } catch (e) { /* the on-screen copy is the fallback */ }
     }
 
+    var wired = false;
     // Ask the running module to repeat its report into the listener we just
     // attached.  Init() runs before this script, so its first report is dropped.
     function wire(naclEl) {
+      if (wired) return;
+      wired = true;
       naclEl.addEventListener('message', function (ev) {
         if(ev.data instanceof ArrayBuffer) {window.diagnosticFrame=ev.data;return;}
         send(String(ev.data));
       }, false);
       naclEl.addEventListener('load', function () {
         send('DIAG web  embed "load" fired');
+        configureNetwork();
+        naclEl.postMessage('report');
       }, false);
       naclEl.addEventListener('error', function () {
         send('DIAG FAIL  embed "error" fired — module refused to load');
       }, false);
+      naclEl.addEventListener('crash', function () {
+        status('Receiver stopped. Reopen LanternCast.');
+        document.getElementById('ui').style.display = 'flex';
+      }, false);
       var lastNetwork = "";
       function configureNetwork() {
+        if (!naclEl.postMessage) return;
         try {var network='network|' + webapis.network.getIp() + '|' + webapis.network.getMac();if(network!==lastNetwork){naclEl.postMessage(network);lastNetwork=network;}}
         catch(e) {status('Could not read TV network');}
       }
       configureNetwork();
+      document.addEventListener('visibilitychange', function () {
+        if (!naclEl.postMessage) return;
+        if (document.hidden) naclEl.postMessage('suspend');
+        else { configureNetwork(); naclEl.postMessage('report'); }
+      }, false);
       setInterval(configureNetwork,30000);
-      naclEl.postMessage('report');
+      if (naclEl.postMessage) naclEl.postMessage('report');
     }
 
     // The Tizen 3.0 engine can take closer to a minute to instantiate the
@@ -138,6 +155,7 @@
         send('DIAG web  viewport=' + w + 'x' + h);
       }
 
+      if (naclEl) wire(naclEl);
       if (!naclEl || !naclEl.postMessage) {
         if (tries === 0) send('DIAG web  embed has no postMessage yet — retrying');
         if (tries >= 90) {
@@ -150,7 +168,7 @@
       }
 
       if (tries > 0) send('DIAG web  module appeared after ' + (tries * 2) + 's');
-      wire(naclEl);
+      naclEl.postMessage('report');
     }
 
     // Give the embed a moment to instantiate before probing it.

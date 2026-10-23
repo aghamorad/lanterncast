@@ -28,7 +28,7 @@ FDK_INC     := $(shell python3 -c "import os,sys; print(' '.join('-I'+os.path.re
                  '$(FDK_DIR)/libAACdec/include' '$(FDK_DIR)/libSYS/include' '$(FDK_DIR)/libFDK/include')
 FDK_LIB_REL := $(shell python3 -c "import os; print(os.path.relpath('$(FDK_LIB)'))")
 
-export PNACLPYTHON = python3
+export PNACLPYTHON ?= python3
 export PATH := $(PNACL_BIN):$(PATH)
 
 CXX      := $(PNACL_BIN)/pnacl-clang++
