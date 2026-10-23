@@ -6,11 +6,11 @@ An experimental AirPlay screen-mirroring receiver for older Samsung Tizen TVs. O
 
 It runs directly on the TV as a sideloaded widget, using a Native Client module. Video is decoded by the TV's own hardware H.264 decoder and presented with OpenGL ES; audio is decoded inside the module (AAC-ELD) and played through Pepper's audio output, with the audio clock slaved to video. H.264 video and AAC/AAC-ELD audio arrive over the local network. No companion streaming server, subscription or external diagnostic server is required.
 
-**Early release, v0.2.2.** Tested on a Samsung QA65Q7FAM (2017 Q7F), Tizen 3.0, ARMv7. Fullscreen iPhone mirroring is confirmed on the physical panel: the picture filled the screen at the correct proportions, and the report was smooth playback with the sound in sync. Version 0.2.1 read the H.264 source dimensions from the stream, preserved aspect ratio and applied rotation changes. Version 0.2.2 replaces the Samsung media-player pipeline with hardware decode plus OpenGL ES presentation, decodes audio in the module, reorders and conceals lost audio RTP packets, maps the audio clock to video, and handles play, pause, seek and stop. Other TV models remain unverified. This is not a general claim of compatibility with all Samsung TVs.
+**Early release, v0.2.3.** This update improves session cleanup, stale-socket and stream-generation handling, handles FLUSH, reduces diagnostic logging, and refreshes the TV icon. Installation, launch and Mac AirPlay discovery were verified on a Samsung QA65Q7FAM (2017 Q7F), Tizen 3.0, ARMv7. Discovery required the debug-start recovery described in the installation guide. Audio/video playback for this version, long-session stability and reliable normal startup remain unverified. Earlier versions had physical-panel iPhone playback confirmation; that is not a playback guarantee for this update. Other TV models remain unverified.
 
 ## Install
 
-Download **LanternCast-0.2.2-unsigned.wgt** from [Releases](https://github.com/aghamorad/lanterncast/releases). The package must be signed with a Samsung certificate profile authorized for your TV before installation. A package signed for somebody else's TV is not a universal installer.
+Download **LanternCast-0.2.3-unsigned.wgt** from [Releases](https://github.com/aghamorad/lanterncast/releases). The package must be signed with a Samsung certificate profile authorized for your TV before installation. A package signed for somebody else's TV is not a universal installer.
 
 Follow [the installation guide](docs/INSTALL.md) for Developer Mode, certificates, signing and sideloading. The prebuilt release avoids compiling the old NaCl toolchain. Windows users can use Tizen Studio to sign and install; the helper scripts require Bash and Python 3.9+.
 
